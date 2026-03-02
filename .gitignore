@@ -1,0 +1,33 @@
+# Termux
+.bash_history
+.cache/
+.config/
+.ssh/
+
+# VM Files (too large for git)
+storage/shared/ubuntu-vm/ubuntu-cloud.img
+storage/shared/ubuntu-vm/ubuntu-disk.qcow2
+storage/shared/ubuntu-vm/cloud-init.iso
+storage/shared/ubuntu-vm/backups/
+
+# User settings
+storage/shared/ubuntu-vm/.vm-settings
+storage/shared/ubuntu-vm/console.log
+
+# Downloads
+storage/shared/ubuntu-vm/downloads/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+
+# Temporary files
+tmp/
+temp/
+*.tmp

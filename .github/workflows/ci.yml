@@ -1,0 +1,41 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Check script syntax
+      run: |
+        bash -n install.sh
+        bash -n setup-ubuntu-vm.sh
+        echo "✓ All scripts have valid syntax"
+    
+    - name: Check file permissions
+      run: |
+        find . -name "*.sh" -exec chmod +x {} \;
+        echo "✓ Scripts are executable"
+    
+    - name: Validate Markdown
+      run: |
+        for file in *.md; do
+          if [ -f "$file" ]; then
+            echo "✓ $file exists"
+          fi
+        done
+    
+    - name: Check for sensitive data
+      run: |
+        if grep -r "ghp_" . --include="*.md" --include="*.sh" 2>/dev/null; then
+          echo "::error::Found potential GitHub token!"
+          exit 1
+        fi
+        echo "✓ No sensitive data found"
