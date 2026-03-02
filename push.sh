@@ -2,6 +2,7 @@
 #
 # Ubuntu Termux VM - Auto Push to GitHub
 # =======================================
+# Creates repository AND pushes automatically
 # Just run: ./push.sh
 #
 
@@ -13,10 +14,12 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 WHITE='\033[1;37m'
+DIM='\033[2m'
 RESET='\033[0m'
 
 echo -e "${CYAN}╔════════════════════════════════════════════════╗${RESET}"
 echo -e "${CYAN}║     Ubuntu Termux VM - Auto Push to GitHub    ║${RESET}"
+echo -e "${CYAN}║     Creates repo + pushes automatically       ║${RESET}"
 echo -e "${CYAN}╚════════════════════════════════════════════════╝${RESET}"
 echo ""
 
@@ -74,16 +77,46 @@ git branch -M main 2>/dev/null || true
 # Remove existing remote if exists
 git remote remove origin 2>/dev/null || true
 
-# Add remote
-echo -e "${CYAN}Connecting to GitHub repository...${RESET}"
-git remote add origin "https://$GITHUB_USERNAME:$GITHUB_TOKEN@github.com/$GITHUB_USERNAME/ubuntu-termux-vm.git"
-
-# Push
+echo ""
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
-echo -e "${CYAN}Pushing to GitHub...${RESET}"
+echo -e "${CYAN}Step 1: Creating GitHub Repository...${RESET}"
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
 echo ""
 
+# Create repository via GitHub API
+REPO_NAME="ubuntu-termux-vm"
+REPO_DESC="Run Ubuntu 24.04 on Android with Termux + QEMU - No root required!"
+
+CREATE_RESPONSE=$(curl -s -X POST \
+    -H "Authorization: token $GITHUB_TOKEN" \
+    -H "Accept: application/vnd.github.v3+json" \
+    https://api.github.com/user/repos \
+    -d "{
+        \"name\": \"$REPO_NAME\",
+        \"description\": \"$REPO_DESC\",
+        \"public\": true,
+        \"auto_init\": false
+    }" 2>&1)
+
+# Check if repo created or already exists
+if echo "$CREATE_RESPONSE" | grep -q "already exists"; then
+    echo -e "${YELLOW}⚠ Repository already exists (that's ok)${RESET}"
+elif echo "$CREATE_RESPONSE" | grep -q "\"name\":\"$REPO_NAME\""; then
+    echo -e "${GREEN}✓ Repository created successfully!${RESET}"
+else
+    echo -e "${YELLOW}Note: $CREATE_RESPONSE${RESET}"
+fi
+
+echo ""
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+echo -e "${CYAN}Step 2: Pushing to GitHub...${RESET}"
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+echo ""
+
+# Add remote with token
+git remote add origin "https://$GITHUB_USERNAME:$GITHUB_TOKEN@github.com/$GITHUB_USERNAME/$REPO_NAME.git"
+
+# Push
 git push -u origin main --force
 
 if [ $? -eq 0 ]; then
@@ -93,7 +126,7 @@ if [ $? -eq 0 ]; then
     echo -e "${GREEN}╚════════════════════════════════════════════════╝${RESET}"
     echo ""
     echo -e "${WHITE}Your repository is now live at:${RESET}"
-    echo -e "${CYAN}https://github.com/$GITHUB_USERNAME/ubuntu-termux-vm${RESET}"
+    echo -e "${CYAN}https://github.com/$GITHUB_USERNAME/$REPO_NAME${RESET}"
     echo ""
     echo -e "${YELLOW}⚠️  IMPORTANT: Delete your token now!${RESET}"
     echo -e "${DIM}Go to: https://github.com/settings/tokens${RESET}"
@@ -114,7 +147,6 @@ else
     echo -e "  • Invalid token"
     echo -e "  • Username incorrect"
     echo -e "  • Network issue"
-    echo -e "  • Repository name already exists"
     echo ""
     echo -e "${YELLOW}Try again or check your credentials.${RESET}"
 fi
