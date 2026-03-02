@@ -1,0 +1,1202 @@
+#!/data/data/com.termux/files/usr/bin/bash
+#
+# Ubuntu VM - Advanced Console Launcher v3.0
+# ===========================================
+# Fully Customizable TUI with Arrow Key Navigation
+# + Auto-Download + Troubleshooting + Alternative Sources
+#
+
+set -e
+
+# ═══════════════════════════════════════════════════════════════
+# CONFIGURATION
+# ═══════════════════════════════════════════════════════════════
+
+# Colors
+declare -A COLORS=(
+    [RED]='\033[0;31m'
+    [GREEN]='\033[0;32m'
+    [YELLOW]='\033[1;33m'
+    [BLUE]='\033[0;34m'
+    [MAGENTA]='\033[0;35m'
+    [CYAN]='\033[0;36m'
+    [WHITE]='\033[1;37m'
+    [DIM]='\033[2m'
+    [BOLD]='\033[1m'
+    [REVERSE]='\033[7m'
+    [HIDDEN]='\033[8m'
+    [RESET]='\033[0m'
+)
+
+# Directories
+VM_DIR="$HOME/storage/shared/ubuntu-vm"
+DISK="$VM_DIR/ubuntu-disk.qcow2"
+CLOUD_IMG="$VM_DIR/ubuntu-cloud.img"
+CLOUD_INIT_ISO="$VM_DIR/cloud-init.iso"
+SHARE_DIR="$HOME/ubuntu_share"
+UEFI="$PREFIX/share/qemu/edk2-aarch64-code.fd"
+SETTINGS_FILE="$VM_DIR/.vm-settings"
+BACKUP_DIR="$VM_DIR/backups"
+DOWNLOAD_DIR="$VM_DIR/downloads"
+LOG_FILE="$VM_DIR/console.log"
+
+# Default Settings
+declare -A DEFAULTS=(
+    [CPU_CORES]=4
+    [RAM_SIZE]="4G"
+    [CACHE_MODE]="writeback"
+    [ENABLE_VIRTFS]="yes"
+    [ENABLE_RNG]="yes"
+    [ENABLE_BALLOON]="yes"
+    [MULTI_QUEUE]="yes"
+    [HIGHMEM]="yes"
+    [AIO_MODE]="native"
+    [DISCARD_MODE]="unmap"
+)
+
+# Current Settings (will be loaded)
+declare -A SETTINGS=()
+
+# System Info (dynamic)
+declare -A SYSTEM=()
+
+# Menu State
+declare -A STATE=(
+    [main_row]=0
+    [main_col]=0
+    [settings_row]=0
+    [advanced_row]=0
+    [current_view]="main"
+)
+
+# Download Sources (mirrors for fallback)
+declare -a UBUNTU_MIRRORS=(
+    "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img"
+    "https://mirrors.edge.kernel.org/ubuntu-cloud/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img"
+    "https://mirror.clarkson.edu/ubuntu-cloud/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img"
+)
+
+declare -a FILEBROWSER_MIRRORS=(
+    "https://github.com/filebrowser/filebrowser/releases/download/v2.31.2/linux-arm64-filebrowser.tar.gz"
+    "https://mirror.ghproxy.com/https://github.com/filebrowser/filebrowser/releases/download/v2.31.2/linux-arm64-filebrowser.tar.gz"
+)
+
+declare -a TTYD_MIRRORS=(
+    "https://github.com/tsl0922/ttyd/releases/download/1.7.4/ttyd.aarch64"
+    "https://mirror.ghproxy.com/https://github.com/tsl0922/ttyd/releases/download/1.7.4/ttyd.aarch64"
+)
+
+# ═══════════════════════════════════════════════════════════════
+# LOGGING
+# ═══════════════════════════════════════════════════════════════
+
+log() {
+    local level=$1
+    shift
+    local msg="$*"
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    echo "[$timestamp] [$level] $msg" >> "$LOG_FILE"
+}
+
+log_info() { log "INFO" "$@"; }
+log_warn() { log "WARN" "$@"; }
+log_error() { log "ERROR" "$@"; }
+log_debug() { log "DEBUG" "$@"; }
+
+# ═══════════════════════════════════════════════════════════════
+# UTILITY FUNCTIONS
+# ═══════════════════════════════════════════════════════════════
+
+# Hide/show cursor
+hide_cursor() { echo -ne "\033[?25l"; }
+show_cursor() { echo -ne "\033[?25h"; }
+
+# Clear screen
+clear_screen() { clear; }
+
+# Move cursor
+move_cursor() { echo -ne "\033[$1;$2H"; }
+
+# Get terminal size
+get_term_size() {
+    local size=$(stty size 2>/dev/null || echo "24 80")
+    TERM_ROWS=${size%% *}
+    TERM_COLS=${size##* }
+}
+
+# Read key without echo
+read_key() {
+    local key=""
+    IFS= read -r -n1 -s key
+    if [[ "$key" == $'\x1b' ]]; then
+        IFS= read -r -n2 -s key
+        key="$key"
+    fi
+    echo "$key"
+}
+
+# ═══════════════════════════════════════════════════════════════
+# DOWNLOAD MANAGER
+# ═══════════════════════════════════════════════════════════════
+
+# Check if file exists and is valid
+check_file() {
+    local file=$1
+    local min_size=$2  # minimum size in bytes
+    
+    if [[ ! -f "$file" ]]; then
+        return 1
+    fi
+    
+    if [[ -n "$min_size" ]]; then
+        local actual_size=$(stat -c%s "$file" 2>/dev/null || echo "0")
+        if [[ $actual_size -lt $min_size ]]; then
+            return 2
+        fi
+    fi
+    
+    return 0
+}
+
+# Download with progress and retry
+download_with_progress() {
+    local url=$1
+    local output=$2
+    local description=$3
+    local max_retries=${4:-3}
+    local min_size=${5:-0}
+    
+    local attempt=1
+    local success=false
+    
+    while [[ $attempt -le $max_retries ]]; do
+        echo ""
+        echo -e "${COLORS[CYAN]}Downloading $description (Attempt $attempt/$max_retries)...${COLORS[RESET]}"
+        echo -e "${COLORS[DIM]}Source: $url${COLORS[RESET]}"
+        echo ""
+        
+        # Try wget first
+        if command -v wget > /dev/null 2>&1; then
+            wget -q --show-progress -O "$output.tmp" "$url" 2>&1
+            local wget_status=$?
+            
+            if [[ $wget_status -eq 0 ]]; then
+                mv "$output.tmp" "$output"
+                success=true
+            fi
+        # Try curl as fallback
+        elif command -v curl > /dev/null 2>&1; then
+            curl -# -L -o "$output.tmp" "$url" 2>&1
+            local curl_status=$?
+            
+            if [[ $curl_status -eq 0 ]]; then
+                mv "$output.tmp" "$output"
+                success=true
+            fi
+        else
+            echo -e "${COLORS[RED]}Error: Neither wget nor curl is available${COLORS[RESET]}"
+            log_error "No download tool available"
+            return 1
+        fi
+        
+        # Verify download
+        if [[ "$success" == "true" ]]; then
+            if [[ $min_size -gt 0 ]]; then
+                local actual_size=$(stat -c%s "$output" 2>/dev/null || echo "0")
+                if [[ $actual_size -lt $min_size ]]; then
+                    echo -e "${COLORS[YELLOW]}Warning: Downloaded file too small ($actual_size < $min_size bytes)${COLORS[RESET]}"
+                    success=false
+                fi
+            fi
+        fi
+        
+        if [[ "$success" == "true" ]]; then
+            echo -e "${COLORS[GREEN]}✓ Download complete!${COLORS[RESET]}"
+            log_info "Downloaded: $description from $url"
+            return 0
+        else
+            echo -e "${COLORS[YELLOW]}Download failed (attempt $attempt)${COLORS[RESET]}"
+            log_warn "Download failed: $url (attempt $attempt)"
+            rm -f "$output.tmp"
+        fi
+        
+        ((attempt++))
+        
+        if [[ $attempt -le $max_retries ]]; then
+            echo -e "${COLORS[DIM]}Retrying in 2 seconds...${COLORS[RESET]}"
+            sleep 2
+        fi
+    done
+    
+    echo -e "${COLORS[RED]}✗ All download attempts failed for: $description${COLORS[RESET]}"
+    log_error "All download attempts failed: $description"
+    return 1
+}
+
+# Download with mirror fallback
+download_with_fallback() {
+    local -n mirrors=$1
+    local output=$2
+    local description=$3
+    local min_size=${4:-0}
+    
+    echo ""
+    echo -e "${COLORS[CYAN]}╔════════════════════════════════════════════════╗${COLORS[RESET]}"
+    echo -e "${COLORS[CYAN]}║   Downloading: $description${COLORS[RESET]}"
+    echo -e "${COLORS[CYAN]}╚════════════════════════════════════════════════╝${COLORS[RESET]}"
+    echo ""
+    
+    for i in "${!mirrors[@]}"; do
+        local mirror="${mirrors[$i]}"
+        echo -e "${COLORS[DIM]}Trying mirror $((i+1))/${#mirrors[@]}...${COLORS[RESET]}"
+        
+        if download_with_progress "$mirror" "$output" "$description" 2 "$min_size"; then
+            return 0
+        fi
+        
+        echo ""
+    done
+    
+    echo -e "${COLORS[RED]}╔════════════════════════════════════════════════╗${COLORS[RESET]}"
+    echo -e "${COLORS[RED]}║   ERROR: All mirrors failed!                   ║${COLORS[RESET]}"
+    echo -e "${COLORS[RED]}╚════════════════════════════════════════════════╝${COLORS[RESET]}"
+    echo ""
+    
+    return 1
+}
+
+# Check and download required files
+check_and_download_requirements() {
+    local missing_files=()
+    local need_download=false
+    
+    echo -e "${COLORS[CYAN]}Checking requirements...${COLORS[RESET]}"
+    
+    # Check QEMU
+    if ! command -v qemu-system-aarch64 > /dev/null 2>&1; then
+        echo -e "${COLORS[RED]}✗ QEMU not installed${COLORS[RESET]}"
+        echo ""
+        echo -e "${COLORS[YELLOW]}Solution:${COLORS[RESET]}"
+        echo "  pkg install qemu-system-aarch64"
+        echo ""
+        read -p "Install now? (y/n): " install_now
+        if [[ "$install_now" == "y" ]]; then
+            pkg install qemu-system-aarch64
+        else
+            return 1
+        fi
+    else
+        echo -e "${COLORS[GREEN]}✓ QEMU installed${COLORS[RESET]}"
+    fi
+    
+    # Check UEFI
+    if ! check_file "$UEFI" 1000; then
+        echo -e "${COLORS[YELLOW]}✗ UEFI firmware missing${COLORS[RESET]}"
+        missing_files+=("uefi")
+        need_download=true
+    else
+        echo -e "${COLORS[GREEN]}✓ UEFI firmware found${COLORS[RESET]}"
+    fi
+    
+    # Check Cloud Image
+    if ! check_file "$CLOUD_IMG" 100000000; then  # Min 100MB
+        echo -e "${COLORS[YELLOW]}✗ Ubuntu cloud image missing${COLORS[RESET]}"
+        missing_files+=("cloudimg")
+        need_download=true
+    else
+        echo -e "${COLORS[GREEN]}✓ Ubuntu cloud image found${COLORS[RESET]}"
+    fi
+    
+    # Check Disk
+    if ! check_file "$DISK" 0; then
+        echo -e "${COLORS[DIM]}- Disk image will be created${COLORS[RESET]}"
+    else
+        echo -e "${COLORS[GREEN]}✓ Disk image found${COLORS[RESET]}"
+    fi
+    
+    # Check Cloud-init ISO
+    if ! check_file "$CLOUD_INIT_ISO" 1000; then
+        echo -e "${COLORS[DIM]}- Cloud-init ISO will be generated${COLORS[RESET]}"
+    else
+        echo -e "${COLORS[GREEN]}✓ Cloud-init ISO found${COLORS[RESET]}"
+    fi
+    
+    echo ""
+    
+    if [[ "$need_download" == "true" ]]; then
+        echo -e "${COLORS[YELLOW]}Some files are missing. Download now?${COLORS[RESET]}"
+        read -p "Continue? (y/n): " confirm
+        
+        if [[ "$confirm" != "y" ]]; then
+            echo -e "${COLORS[RED]}Setup cancelled${COLORS[RESET]}"
+            return 1
+        fi
+        
+        download_missing_files "${missing_files[@]}"
+    fi
+    
+    return 0
+}
+
+# Download specific missing files
+download_missing_files() {
+    local files=("$@")
+    mkdir -p "$DOWNLOAD_DIR"
+    
+    for file in "${files[@]}"; do
+        case "$file" in
+            "uefi")
+                echo -e "${COLORS[DIM]}UEFI firmware is part of QEMU package${COLORS[RESET]}"
+                echo "Reinstall QEMU if missing:"
+                echo "  pkg install qemu-system-aarch64 --reinstall"
+                ;;
+            
+            "cloudimg")
+                download_with_fallback UBUNTU_MIRRORS "$CLOUD_IMG" "Ubuntu 24.04 Cloud Image" 100000000
+                ;;
+        esac
+    done
+}
+
+# Troubleshoot download failures
+troubleshoot_download() {
+    local resource=$1
+    
+    clear_screen
+    show_cursor
+    
+    echo -e "${COLORS[RED]}╔════════════════════════════════════════════════╗${COLORS[RESET]}"
+    echo -e "${COLORS[RED]}║   TROUBLESHOOTING: $resource${COLORS[RESET]}"
+    echo -e "${COLORS[RED]}╚════════════════════════════════════════════════╝${COLORS[RESET]}"
+    echo ""
+    
+    case "$resource" in
+        "ubuntu")
+            echo -e "${COLORS[YELLOW]}Possible causes:${COLORS[RESET]}"
+            echo "  1. Network connection issue"
+            echo "  2. All mirrors are down"
+            echo "  3. Firewall blocking download"
+            echo "  4. Storage permission denied"
+            echo ""
+            echo -e "${COLORS[YELLOW]}Solutions:${COLORS[RESET]}"
+            echo ""
+            echo "  ${COLORS[CYAN]}1. Check network:${COLORS[RESET]}"
+            echo "     ping -c 3 cloud-images.ubuntu.com"
+            echo ""
+            echo "  ${COLORS[CYAN]}2. Try manual download:${COLORS[RESET]}"
+            echo "     wget https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img -O $CLOUD_IMG"
+            echo ""
+            echo "  ${COLORS[CYAN]}3. Check storage:${COLORS[RESET]}"
+            echo "     termux-setup-storage"
+            echo ""
+            echo "  ${COLORS[CYAN]}4. Use alternative mirror:${COLORS[RESET]}"
+            echo "     wget https://mirrors.edge.kernel.org/ubuntu-cloud/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img -O $CLOUD_IMG"
+            echo ""
+            ;;
+        
+        "qemu")
+            echo -e "${COLORS[YELLOW]}QEMU not installed${COLORS[RESET]}"
+            echo ""
+            echo -e "${COLORS[CYAN]}Install command:${COLORS[RESET]}"
+            echo "  pkg update && pkg install qemu-system-aarch64 xorriso"
+            echo ""
+            ;;
+    esac
+    
+    echo ""
+    echo -e "${COLORS[DIM]}Press any key to return to menu...${COLORS[RESET]}"
+    read -n1 -s
+}
+
+# ═══════════════════════════════════════════════════════════════
+# SYSTEM SCANNING
+# ═══════════════════════════════════════════════════════════════
+
+scan_system() {
+    # CPU Info
+    SYSTEM[TOTAL_CORES]=$(nproc 2>/dev/null || echo "4")
+    SYSTEM[CPU_MODEL]=$(cat /proc/cpuinfo 2>/dev/null | grep "model name" | head -1 | cut -d: -f2 | xargs || echo "Unknown")
+    
+    # Memory Info
+    local mem_kb=$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}' || echo "4194304")
+    SYSTEM[TOTAL_RAM_GB]=$((mem_kb / 1024 / 1024))
+    SYSTEM[AVAILABLE_RAM]=$(free -h 2>/dev/null | awk 'NR==2{print $7}' || echo "N/A")
+    
+    # Storage Info
+    if [ -f "$DISK" ]; then
+        SYSTEM[DISK_SIZE]=$(du -h "$DISK" 2>/dev/null | cut -f1 || echo "N/A")
+        SYSTEM[DISK_FORMAT]=$(qemu-img info "$DISK" 2>/dev/null | grep "file format" | awk '{print $3}' || echo "N/A")
+        SYSTEM[VIRT_SIZE]=$(qemu-img info "$DISK" 2>/dev/null | grep "virtual size" | awk -F'(' '{print $2}' | awk -F')' '{print $1}' || echo "N/A")
+    else
+        SYSTEM[DISK_SIZE]="Not created"
+        SYSTEM[DISK_FORMAT]="N/A"
+        SYSTEM[VIRT_SIZE]="N/A"
+    fi
+    
+    # QEMU Info
+    SYSTEM[QEMU_VERSION]=$(qemu-system-aarch64 --version 2>&1 | head -1 | cut -d'(' -f1 || echo "Unknown")
+    
+    # KVM Support
+    if [ -e /dev/kvm ]; then
+        SYSTEM[KVM_SUPPORT]="yes"
+    else
+        SYSTEM[KVM_SUPPORT]="no"
+    fi
+    
+    # Network Info
+    SYSTEM[HOST_IP]=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "N/A")
+    
+    # Backup Count
+    SYSTEM[BACKUP_COUNT]=$(ls -1 "$BACKUP_DIR"/*.qcow2 2>/dev/null | wc -l || echo "0")
+    
+    # Last Backup
+    if [ "$SYSTEM[BACKUP_COUNT]" -gt 0 ]; then
+        SYSTEM[LAST_BACKUP]=$(ls -t "$BACKUP_DIR"/*.qcow2 2>/dev/null | head -1 | xargs basename 2>/dev/null | cut -d'-' -f4- | cut -d'.' -f1 || echo "N/A")
+    else
+        SYSTEM[LAST_BACKUP]="None"
+    fi
+    
+    # Download Status
+    SYSTEM[CLOUDIMG_STATUS]="missing"
+    if check_file "$CLOUD_IMG" 100000000; then
+        SYSTEM[CLOUDIMG_STATUS]="ready"
+    fi
+    
+    # Storage Space
+    SYSTEM[STORAGE_FREE]=$(df -h "$VM_DIR" 2>/dev/null | awk 'NR==2{print $4}' || echo "N/A")
+}
+
+# ═══════════════════════════════════════════════════════════════
+# SETTINGS MANAGEMENT
+# ═══════════════════════════════════════════════════════════════
+
+load_settings() {
+    # Start with defaults
+    for key in "${!DEFAULTS[@]}"; do
+        SETTINGS[$key]="${DEFAULTS[$key]}"
+    done
+    
+    # Load saved settings if exist
+    if [ -f "$SETTINGS_FILE" ]; then
+        while IFS='=' read -r key value; do
+            [[ "$key" =~ ^#.*$ ]] && continue
+            [[ -z "$key" ]] && continue
+            key=$(echo "$key" | tr -d ' ')
+            value=$(echo "$value" | tr -d ' ')
+            if [[ -n "$key" ]] && [[ -n "$value" ]]; then
+                SETTINGS[$key]="$value"
+            fi
+        done < "$SETTINGS_FILE"
+    fi
+}
+
+save_settings() {
+    cat > "$SETTINGS_FILE" << EOF
+# Ubuntu VM Settings
+# Generated: $(date)
+CPU_CORES=${SETTINGS[CPU_CORES]}
+RAM_SIZE=${SETTINGS[RAM_SIZE]}
+CACHE_MODE=${SETTINGS[CACHE_MODE]}
+ENABLE_VIRTFS=${SETTINGS[ENABLE_VIRTFS]}
+ENABLE_RNG=${SETTINGS[ENABLE_RNG]}
+ENABLE_BALLOON=${SETTINGS[ENABLE_BALLOON]}
+MULTI_QUEUE=${SETTINGS[MULTI_QUEUE]}
+HIGHMEM=${SETTINGS[HIGHMEM]}
+AIO_MODE=${SETTINGS[AIO_MODE]}
+DISCARD_MODE=${SETTINGS[DISCARD_MODE]}
+EOF
+    return 0
+}
+
+reset_settings() {
+    for key in "${!DEFAULTS[@]}"; do
+        SETTINGS[$key]="${DEFAULTS[$key]}"
+    done
+}
+
+# ═══════════════════════════════════════════════════════════════
+# DRAWING FUNCTIONS
+# ═══════════════════════════════════════════════════════════════
+
+# Draw box
+draw_box() {
+    local x=$1 y=$2 w=$3 h=$4 title="${5:-}" color="${6:-${COLORS[WHITE]}}"
+    
+    echo -ne "$color"
+    
+    # Top border
+    move_cursor $y $x
+    echo -n "╔"
+    for ((i=0; i<w-2; i++)); do echo -n "═"; done
+    echo -n "╗"
+    
+    # Title
+    if [[ -n "$title" ]]; then
+        move_cursor $y $((x + (w - ${#title}) / 2))
+        echo -n " $title "
+    fi
+    
+    # Side borders
+    for ((i=1; i<h-1; i++)); do
+        move_cursor $((y + i)) $x
+        echo -n "║"
+        move_cursor $((y + i)) $((x + w - 1))
+        echo -n "║"
+    done
+    
+    # Bottom border
+    move_cursor $((y + h - 1)) $x
+    echo -n "╚"
+    for ((i=0; i<w-2; i++)); do echo -n "═"; done
+    echo -n "╝"
+    
+    echo -ne "${COLORS[RESET]}"
+}
+
+# Draw text at position
+draw_text() {
+    local x=$1 y=$2 text="${3:-}" color="${4:-${COLORS[NC]}}" max_width="${5:-0}"
+    
+    if [[ $max_width -gt 0 ]] && [[ ${#text} -gt $max_width ]]; then
+        text="${text:0:$((max_width-3))}..."
+    fi
+    
+    move_cursor $y $x
+    echo -ne "$color$text${COLORS[RESET]}"
+}
+
+# Draw horizontal line
+draw_hline() {
+    local x=$1 y=$2 w=$3 char="${4:-─}" color="${5:-${COLORS[DIM]}}"
+    
+    move_cursor $y $x
+    echo -ne "$color"
+    for ((i=0; i<w; i++)); do echo -n "$char"; done
+    echo -ne "${COLORS[RESET]}"
+}
+
+# Draw filled box
+draw_filled_box() {
+    local x=$1 y=$2 w=$3 h=$4 color="${5:-${COLORS[DIM]}}"
+    
+    echo -ne "$color"
+    for ((i=0; i<h; i++)); do
+        move_cursor $((y + i)) $x
+        for ((j=0; j<w; j++)); do echo -n " "; done
+    done
+    echo -ne "${COLORS[RESET]}"
+}
+
+# Draw status indicator
+draw_status() {
+    local x=$1 y=$2 status=$3 label=$4
+    
+    local icon="${COLORS[RED]}✗${COLORS[RESET]}"
+    local color="${COLORS[RED]}"
+    
+    if [[ "$status" == "ready" ]] || [[ "$status" == "yes" ]]; then
+        icon="${COLORS[GREEN]}✓${COLORS[RESET]}"
+        color="${COLORS[GREEN]}"
+    elif [[ "$status" == "downloading" ]]; then
+        icon="${COLORS[YELLOW]}⟳${COLORS[RESET]}"
+        color="${COLORS[YELLOW]}"
+    fi
+    
+    draw_text $x $y "$icon $label" "$color"
+}
+
+# ═══════════════════════════════════════════════════════════════
+# UI COMPONENTS
+# ═══════════════════════════════════════════════════════════════
+
+# Draw header
+draw_header() {
+    local w=$((TERM_COLS - 4))
+    draw_box 2 1 $w 4 " UBUNTU VM CONSOLE v3.0 " "${COLORS[GREEN]}"
+    
+    draw_text 4 2 "🐘 Ubuntu VM - Advanced Launcher" "${COLORS[WHITE]}"
+    draw_text 4 3 "Auto-Download + Troubleshooting + Full Customization" "${COLORS[CYAN]}"
+}
+
+# Draw system info panel
+draw_system_panel() {
+    local w=38 h=12 x=2 y=6
+    
+    draw_box $x $y $w $h " SYSTEM INFO " "${COLORS[BLUE]}"
+    
+    local row=$((y + 1))
+    draw_text $((x + 2)) $row "Host CPU: ${SYSTEM[TOTAL_CORES]} cores" "${COLORS[CYAN]}"
+    draw_text $((x + 2)) $((row + 1)) "Host RAM: ${SYSTEM[TOTAL_RAM_GB]} GB" "${COLORS[CYAN]}"
+    draw_text $((x + 2)) $((row + 2)) "QEMU: ${SYSTEM[QEMU_VERSION]:0:30}" "${COLORS[CYAN]}"
+    draw_text $((x + 2)) $((row + 3)) "Storage: ${SYSTEM[STORAGE_FREE]}" "${COLORS[CYAN]}"
+    draw_hline $((x + 2)) $((row + 5)) 30 "─" "${COLORS[DIM]}"
+    draw_text $((x + 2)) $((row + 6)) "Cloud Image:" "${COLORS[WHITE]}"
+    
+    if [[ "${SYSTEM[CLOUDIMG_STATUS]}" == "ready" ]]; then
+        draw_status $((x + 18)) $((row + 6)) "ready" "Ready"
+    else
+        draw_status $((x + 18)) $((row + 6)) "missing" "Missing"
+    fi
+    
+    draw_text $((x + 2)) $((row + 7)) "Disk: ${SYSTEM[DISK_SIZE]}" "${COLORS[CYAN]}"
+    draw_text $((x + 2)) $((row + 8)) "Backups: ${SYSTEM[BACKUP_COUNT]}" "${COLORS[CYAN]}"
+}
+
+# Draw settings panel
+draw_settings_panel() {
+    local w=45 h=15 x=$((TERM_COLS / 2)) y=6
+    
+    draw_box $x $y $w $h " VM SETTINGS " "${COLORS[YELLOW]}"
+    
+    local row=$((y + 1))
+    local items=(
+        "CPU_CORES:CPU Cores:${SETTINGS[CPU_CORES]} cores"
+        "RAM_SIZE:RAM Size:${SETTINGS[RAM_SIZE]}"
+        "CACHE_MODE:Disk Cache:${SETTINGS[CACHE_MODE]}"
+        "ENABLE_VIRTFS:VirtFS Share:${SETTINGS[ENABLE_VIRTFS]}"
+        "ENABLE_RNG:Hardware RNG:${SETTINGS[ENABLE_RNG]}"
+        "ENABLE_BALLOON:Mem Balloon:${SETTINGS[ENABLE_BALLOON]}"
+        "MULTI_QUEUE:Multi-Queue:${SETTINGS[MULTI_QUEUE]}"
+    )
+    
+    for i in "${!items[@]}"; do
+        IFS=':' read -r key label value <<< "${items[$i]}"
+        local color="${COLORS[NC]}"
+        if [[ "${STATE[current_view]}" == "settings" ]] && [[ $i -eq ${STATE[settings_row]} ]]; then
+            color="${COLORS[REVERSE]}${COLORS[GREEN]}"
+        fi
+        draw_text $((x + 2)) $((row + i)) " [$((i + 1))] $label: $value" "$color"
+    done
+    
+    draw_text $((x + 2)) $((row + 8)) "[R] Reset  [S] Save  [←/→] Change" "${COLORS[DIM]}"
+}
+
+# Draw performance panel
+draw_performance_panel() {
+    local w=38 h=8 x=2 y=$((TERM_ROWS - 10))
+    
+    draw_box $x $y $w $h " PERFORMANCE " "${COLORS[MAGENTA]}"
+    
+    # Calculate score
+    local score=0
+    [[ ${SETTINGS[CPU_CORES]} -ge 4 ]] && score=$((score + 30))
+    [[ ${SETTINGS[CPU_CORES]} -ge 6 ]] && score=$((score + 10))
+    
+    case "${SETTINGS[RAM_SIZE]}" in
+        4G) score=$((score + 25)) ;;
+        5G|6G) score=$((score + 35)) ;;
+        8G) score=$((score + 40)) ;;
+        3G) score=$((score + 20)) ;;
+        2G) score=$((score + 15)) ;;
+        *) score=$((score + 10)) ;;
+    esac
+    
+    case "${SETTINGS[CACHE_MODE]}" in
+        unsafe) score=$((score + 20)) ;;
+        writeback) score=$((score + 15)) ;;
+        none) score=$((score + 10)) ;;
+        writethrough) score=$((score + 5)) ;;
+    esac
+    
+    local level="LOW"
+    local color="${COLORS[RED]}"
+    if [[ $score -ge 90 ]]; then
+        level="MAXIMUM"
+        color="${COLORS[GREEN]}"
+    elif [[ $score -ge 70 ]]; then
+        level="HIGH"
+        color="${COLORS[CYAN]}"
+    elif [[ $score -ge 50 ]]; then
+        level="MEDIUM"
+        color="${COLORS[YELLOW]}"
+    fi
+    
+    local safety="SAFE"
+    local safety_color="${COLORS[GREEN]}"
+    if [[ "${SETTINGS[CACHE_MODE]}" == "unsafe" ]]; then
+        safety="MODERATE"
+        safety_color="${COLORS[YELLOW]}"
+    fi
+    
+    draw_text $((x + 2)) $((y + 1)) "Score: $color$BOLD $level ($score/100) ${COLORS[RESET]}"
+    draw_text $((x + 2)) $((y + 2)) "Safety: $safety_color$safety${COLORS[RESET]}"
+    
+    # Progress bar
+    local bar_w=25
+    local filled=$((score * bar_w / 100))
+    draw_text $((x + 2)) $((y + 3)) "["
+    draw_text $((x + 3)) $((y + 3)) "${COLORS[GREEN]}"
+    for ((i=0; i<filled; i++)); do echo -n "█"; done
+    draw_text $((x + 3 + filled)) $((y + 3)) "${COLORS[DIM]}"
+    for ((i=filled; i<bar_w; i++)); do echo -n "░"; done
+    draw_text $((x + 3 + bar_w)) $((y + 3)) "]"
+}
+
+# Draw actions panel
+draw_actions_panel() {
+    local w=45 h=10 x=$((TERM_COLS / 2)) y=$((TERM_ROWS - 12))
+    
+    draw_box $x $y $w $h " ACTIONS " "${COLORS[GREEN]}"
+    
+    local row=$((y + 1))
+    local actions=(
+        "START VM - Boot with current settings"
+        "Save Settings"
+        "Health Check"
+        "Backup VM"
+        "Download Missing Files"
+        "Troubleshooting"
+        "Advanced Options"
+        "Quit"
+    )
+    
+    for i in "${!actions[@]}"; do
+        local color="${COLORS[NC]}"
+        local prefix=" "
+        if [[ "${STATE[current_view]}" == "actions" ]] && [[ $i -eq ${STATE[main_row]} ]]; then
+            color="${COLORS[REVERSE]}${COLORS[GREEN]}"
+            prefix="▶"
+        fi
+        draw_text $((x + 2)) $((row + i)) "$prefix [$((i + 1))] ${actions[$i]}" "$color"
+    done
+    
+    draw_text $((x + 2)) $((row + 8)) "Use ↑↓ to navigate, ENTER to select" "${COLORS[DIM]}"
+}
+
+# Draw help bar
+draw_help_bar() {
+    local y=$((TERM_ROWS - 1))
+    draw_hline 1 $y $TERM_COLS "─" "${COLORS[DIM]}"
+    
+    local help="↑↓ Navigate  ←→ Adjust  ENTER Select  Q Quit"
+    draw_text 2 $y "$help" "${COLORS[DIM]}"
+}
+
+# ═══════════════════════════════════════════════════════════════
+# MAIN DRAW FUNCTION
+# ═══════════════════════════════════════════════════════════════
+
+draw_screen() {
+    clear_screen
+    get_term_size
+    
+    draw_header
+    draw_system_panel
+    draw_settings_panel
+    draw_performance_panel
+    draw_actions_panel
+    draw_help_bar
+}
+
+# ═══════════════════════════════════════════════════════════════
+# INPUT HANDLING
+# ═══════════════════════════════════════════════════════════════
+
+handle_input() {
+    local key=$(read_key)
+    
+    case "$key" in
+        # Up arrow
+        $'\x1b[A')
+            if [[ "${STATE[current_view]}" == "actions" ]]; then
+                STATE[main_row]=$(( (STATE[main_row] - 1 + 8) % 8 ))
+            elif [[ "${STATE[current_view]}" == "settings" ]]; then
+                STATE[settings_row]=$(( (STATE[settings_row] - 1 + 7) % 7 ))
+            fi
+            ;;
+        
+        # Down arrow
+        $'\x1b[B')
+            if [[ "${STATE[current_view]}" == "actions" ]]; then
+                STATE[main_row]=$(( (STATE[main_row] + 1) % 8 ))
+            elif [[ "${STATE[current_view]}" == "settings" ]]; then
+                STATE[settings_row]=$(( (STATE[settings_row] + 1) % 7 ))
+            fi
+            ;;
+        
+        # Left arrow
+        $'\x1b[D')
+            adjust_setting -1
+            ;;
+        
+        # Right arrow
+        $'\x1b[C')
+            adjust_setting +1
+            ;;
+        
+        # Enter
+        "")
+            execute_action
+            ;;
+        
+        # Number keys 1-7
+        [1-7])
+            local num=$((key - 1))
+            if [[ $num -lt 7 ]]; then
+                STATE[settings_row]=$num
+                STATE[current_view]="settings"
+                adjust_setting +1
+            fi
+            ;;
+        
+        # Q/q - Quit
+        [qQ])
+            cleanup
+            exit 0
+            ;;
+        
+        # R/r - Reset
+        [rR])
+            reset_settings
+            ;;
+        
+        # S/s - Save
+        [sS])
+            save_settings
+            ;;
+    esac
+}
+
+# Adjust setting based on direction
+adjust_setting() {
+    local dir=$1
+    local row=${STATE[settings_row]}
+    
+    case $row in
+        0) # CPU Cores
+            local options=(1 2 3 4 6 8)
+            local current=${SETTINGS[CPU_CORES]}
+            for i in "${!options[@]}"; do
+                if [[ ${options[$i]} -eq $current ]]; then
+                    local new_idx=$(( (i + dir + ${#options[@]}) % ${#options[@]} ))
+                    SETTINGS[CPU_CORES]=${options[$new_idx]}
+                    break
+                fi
+            done
+            ;;
+        1) # RAM Size
+            local options=("1G" "2G" "3G" "4G" "5G" "6G" "8G")
+            local current=${SETTINGS[RAM_SIZE]}
+            for i in "${!options[@]}"; do
+                if [[ "${options[$i]}" == "$current" ]]; then
+                    local new_idx=$(( (i + dir + ${#options[@]}) % ${#options[@]} ))
+                    SETTINGS[RAM_SIZE]=${options[$new_idx]}
+                    break
+                fi
+            done
+            ;;
+        2) # Cache Mode
+            local options=("unsafe" "writeback" "none" "writethrough")
+            local current=${SETTINGS[CACHE_MODE]}
+            for i in "${!options[@]}"; do
+                if [[ "${options[$i]}" == "$current" ]]; then
+                    local new_idx=$(( (i + dir + ${#options[@]}) % ${#options[@]} ))
+                    SETTINGS[CACHE_MODE]=${options[$new_idx]}
+                    break
+                fi
+            done
+            ;;
+        3|4|5|6) # Toggle options
+            local keys=("ENABLE_VIRTFS" "ENABLE_RNG" "ENABLE_BALLOON" "MULTI_QUEUE")
+            local key=${keys[$((row - 3))]}
+            if [[ "${SETTINGS[$key]}" == "yes" ]]; then
+                SETTINGS[$key]="no"
+            else
+                SETTINGS[$key]="yes"
+            fi
+            ;;
+    esac
+}
+
+# Execute selected action
+execute_action() {
+    local row=${STATE[main_row]}
+    
+    case $row in
+        0) # Start VM
+            start_vm
+            ;;
+        1) # Save Settings
+            save_settings
+            ;;
+        2) # Health Check
+            run_health_check
+            ;;
+        3) # Backup VM
+            run_backup
+            ;;
+        4) # Download Missing Files
+            run_download_manager
+            ;;
+        5) # Troubleshooting
+            run_troubleshooting
+            ;;
+        6) # Advanced Options
+            show_advanced_menu
+            ;;
+        7) # Quit
+            cleanup
+            exit 0
+            ;;
+    esac
+}
+
+# ═══════════════════════════════════════════════════════════════
+# VM OPERATIONS
+# ═══════════════════════════════════════════════════════════════
+
+start_vm() {
+    # Check requirements first
+    if ! check_file "$UEFI" 1000; then
+        echo -e "${COLORS[RED]}UEFI firmware missing!${COLORS[RESET]}"
+        echo "Please run download manager first."
+        sleep 2
+        return
+    fi
+    
+    if ! check_file "$CLOUD_IMG" 100000000; then
+        echo -e "${COLORS[RED]}Ubuntu cloud image missing!${COLORS[RESET]}"
+        echo "Please run download manager first."
+        sleep 2
+        return
+    fi
+    
+    clear_screen
+    show_cursor
+    
+    echo -e "${COLORS[GREEN]}╔════════════════════════════════════════════════╗${COLORS[RESET]}"
+    echo -e "${COLORS[GREEN]}║${COLORS[WHITE]}          STARTING UBUNTU VM                        ${COLORS[GREEN]}║${COLORS[RESET]}"
+    echo -e "${COLORS[GREEN]}╚════════════════════════════════════════════════╝${COLORS[RESET]}"
+    echo ""
+    echo -e "${COLORS[WHITE]}Configuration:${COLORS[RESET]}"
+    echo -e "  CPU Cores:      ${COLORS[GREEN]}${SETTINGS[CPU_CORES]}${COLORS[RESET]}"
+    echo -e "  RAM:            ${COLORS[GREEN]}${SETTINGS[RAM_SIZE]}${COLORS[RESET]}"
+    echo -e "  Disk Cache:     ${COLORS[GREEN]}${SETTINGS[CACHE_MODE]}${COLORS[RESET]}"
+    echo -e "  VirtFS:         ${COLORS[GREEN]}${SETTINGS[ENABLE_VIRTFS]}${COLORS[RESET]}"
+    echo -e "  Hardware RNG:   ${COLORS[GREEN]}${SETTINGS[ENABLE_RNG]}${COLORS[RESET]}"
+    echo -e "  Memory Balloon: ${COLORS[GREEN]}${SETTINGS[ENABLE_BALLOON]}${COLORS[RESET]}"
+    echo -e "  Multi-Queue:    ${COLORS[GREEN]}${SETTINGS[MULTI_QUEUE]}${COLORS[RESET]}"
+    echo ""
+    echo -e "${COLORS[YELLOW]}Starting QEMU...${COLORS[RESET]}"
+    echo -e "${COLORS[DIM]}Press Ctrl+A then X to exit VM${COLORS[RESET]}"
+    echo ""
+    sleep 2
+    
+    # Build QEMU command
+    local cmd="qemu-system-aarch64"
+    cmd+=" -M virt"
+    [[ "${SETTINGS[HIGHMEM]}" == "yes" ]] && cmd+=",highmem=on"
+    cmd+=" -cpu max"
+    cmd+=" -smp ${SETTINGS[CPU_CORES]}"
+    cmd+=" -m ${SETTINGS[RAM_SIZE]}"
+    cmd+=" -bios \"$UEFI\""
+    cmd+=" -drive file=\"$DISK\",if=virtio,cache=${SETTINGS[CACHE_MODE]},aio=${SETTINGS[AIO_MODE]},discard=${SETTINGS[DISCARD_MODE]},snapshot=off"
+    cmd+=" -drive file=\"$CLOUD_INIT_ISO\",if=virtio,media=cdrom"
+    cmd+=" -netdev user,id=n1,hostfwd=tcp::2222-:22,hostfwd=tcp::8080-:8080,hostfwd=tcp::9000-:9000,hostfwd=tcp::7681-:7681"
+    cmd+=" -device virtio-net-pci,netdev=n1"
+    [[ "${SETTINGS[MULTI_QUEUE]}" == "yes" ]] && cmd+=",mq=on"
+    
+    if [[ "${SETTINGS[ENABLE_VIRTFS]}" == "yes" ]]; then
+        cmd+=" -virtfs local,path=\"$SHARE_DIR\",mount_tag=shared_mount,security_model=none,id=shared_mount"
+    fi
+    
+    [[ "${SETTINGS[ENABLE_RNG]}" == "yes" ]] && cmd+=" -device virtio-rng-pci"
+    [[ "${SETTINGS[ENABLE_BALLOON]}" == "yes" ]] && cmd+=" -device virtio-balloon-pci"
+    cmd+=" -nographic -serial mon:stdio"
+    
+    eval $cmd
+}
+
+run_health_check() {
+    clear_screen
+    show_cursor
+    
+    echo -e "${COLORS[CYAN]}╔════════════════════════════════════════════════╗${COLORS[RESET]}"
+    echo -e "${COLORS[CYAN]}║     VM Health Check                            ║${COLORS[RESET]}"
+    echo -e "${COLORS[CYAN]}╚════════════════════════════════════════════════╝${COLORS[RESET]}"
+    echo ""
+    
+    # Check disk
+    if command -v qemu-img > /dev/null 2>&1 && [ -f "$DISK" ]; then
+        echo -e "${COLORS[WHITE]}Disk Integrity:${COLORS[RESET]}"
+        qemu-img check "$DISK" 2>&1 | head -10
+    else
+        echo -e "${COLORS[YELLOW]}Disk not found${COLORS[RESET]}"
+    fi
+    
+    echo ""
+    echo -e "${COLORS[DIM]}Press any key to continue...${COLORS[RESET]}"
+    read -n1 -s
+}
+
+run_backup() {
+    clear_screen
+    show_cursor
+    
+    if [ -x ~/ubuntu-vm-backup ]; then
+        ~/ubuntu-vm-backup
+    else
+        echo -e "${COLORS[RED]}Backup script not found${COLORS[RESET]}"
+    fi
+    
+    echo ""
+    echo -e "${COLORS[DIM]}Press any key to continue...${COLORS[RESET]}"
+    read -n1 -s
+}
+
+run_download_manager() {
+    clear_screen
+    show_cursor
+    
+    echo -e "${COLORS[CYAN]}╔════════════════════════════════════════════════╗${COLORS[RESET]}"
+    echo -e "${COLORS[CYAN]}║     Download Manager                           ║${COLORS[RESET]}"
+    echo -e "${COLORS[CYAN]}╚════════════════════════════════════════════════╝${COLORS[RESET]}"
+    echo ""
+    
+    check_and_download_requirements
+    
+    echo ""
+    echo -e "${COLORS[DIM]}Press any key to continue...${COLORS[RESET]}"
+    read -n1 -s
+}
+
+run_troubleshooting() {
+    clear_screen
+    show_cursor
+    
+    echo -e "${COLORS[YELLOW]}╔════════════════════════════════════════════════╗${COLORS[RESET]}"
+    echo -e "${COLORS[YELLOW]}║     Troubleshooting                            ║${COLORS[RESET]}"
+    echo -e "${COLORS[YELLOW]}╚════════════════════════════════════════════════╝${COLORS[RESET]}"
+    echo ""
+    echo "Select resource to troubleshoot:"
+    echo ""
+    echo "  [1] Ubuntu Cloud Image Download"
+    echo "  [2] QEMU Installation"
+    echo "  [3] Network Connection"
+    echo "  [4] Storage Permissions"
+    echo "  [5] VM Won't Start"
+    echo ""
+    echo "  [B] Back"
+    echo ""
+    
+    while true; do
+        read -n1 -s choice
+        case "$choice" in
+            1) troubleshoot_download "ubuntu" ;;
+            2) troubleshoot_download "qemu" ;;
+            3)
+                echo -e "${COLORS[CYAN]}Network Diagnostics:${COLORS[RESET]}"
+                ping -c 3 cloud-images.ubuntu.com 2>&1 | head -5
+                echo -e "${COLORS[DIM]}Press any key...${COLORS[RESET]}"
+                read -n1 -s
+                ;;
+            4)
+                echo -e "${COLORS[CYAN]}Storage Check:${COLORS[RESET]}"
+                ls -la "$VM_DIR" 2>&1 | head -5
+                echo -e "${COLORS[DIM]}Press any key...${COLORS[RESET]}"
+                read -n1 -s
+                ;;
+            5)
+                echo -e "${COLORS[CYAN]}VM Startup Troubleshooting:${COLORS[RESET]}"
+                echo "1. Check if UEFI exists: ls -la $UEFI"
+                echo "2. Check if cloud image exists: ls -la $CLOUD_IMG"
+                echo "3. Check disk image: qemu-img check $DISK"
+                echo ""
+                echo "Run diagnostics? (y/n): "
+                read -n1 -s diag
+                if [[ "$diag" == "y" ]]; then
+                    ls -la "$UEFI" "$CLOUD_IMG" "$DISK" 2>&1
+                fi
+                echo -e "${COLORS[DIM]}Press any key...${COLORS[RESET]}"
+                read -n1 -s
+                ;;
+            [bB]) return ;;
+        esac
+    done
+}
+
+show_advanced_menu() {
+    clear_screen
+    show_cursor
+    
+    echo -e "${COLORS[CYAN]}╔════════════════════════════════════════════════╗${COLORS[RESET]}"
+    echo -e "${COLORS[CYAN]}║     Advanced Options                           ║${COLORS[RESET]}"
+    echo -e "${COLORS[CYAN]}╚════════════════════════════════════════════════╝${COLORS[RESET]}"
+    echo ""
+    echo "  [1] Change Disk Image"
+    echo "  [2] Network Configuration"
+    echo "  [3] Custom QEMU Flags"
+    echo "  [4] Performance Profiles"
+    echo "  [5] View Logs"
+    echo ""
+    echo "  [B] Back"
+    echo ""
+    
+    read -n1 -s choice
+    case "$choice" in
+        5)
+            if [ -f "$LOG_FILE" ]; then
+                tail -20 "$LOG_FILE"
+            else
+                echo "No logs yet"
+            fi
+            echo -e "${COLORS[DIM]}Press any key...${COLORS[RESET]}"
+            read -n1 -s
+            ;;
+    esac
+}
+
+# ═══════════════════════════════════════════════════════════════
+# MAIN LOOP
+# ═══════════════════════════════════════════════════════════════
+
+cleanup() {
+    show_cursor
+    clear
+    echo -e "${COLORS[CYAN]}Goodbye!${COLORS[RESET]}"
+}
+
+trap cleanup SIGINT SIGTERM
+
+main() {
+    # Initialize
+    mkdir -p "$DOWNLOAD_DIR"
+    scan_system
+    load_settings
+    hide_cursor
+    get_term_size
+    
+    # Check requirements on first run
+    if ! check_file "$UEFI" 1000 || ! check_file "$CLOUD_IMG" 100000000; then
+        clear_screen
+        show_cursor
+        echo -e "${COLORS[YELLOW]}╔════════════════════════════════════════════════╗${COLORS[RESET]}"
+        echo -e "${COLORS[YELLOW]}║     Missing Files Detected                     ║${COLORS[RESET]}"
+        echo -e "${COLORS[YELLOW]}╚════════════════════════════════════════════════╝${COLORS[RESET]}"
+        echo ""
+        echo "Some required files are missing."
+        echo "Would you like to download them now?"
+        echo ""
+        read -p "Continue? (y/n): " confirm
+        
+        if [[ "$confirm" == "y" ]]; then
+            check_and_download_requirements
+        fi
+    fi
+    
+    # Main loop
+    while true; do
+        draw_screen
+        handle_input
+    done
+}
+
+# Check prerequisites
+if ! command -v qemu-system-aarch64 > /dev/null 2>&1; then
+    echo -e "${COLORS[RED]}Error: QEMU not installed${COLORS[RESET]}"
+    echo "Run: pkg install qemu-system-aarch64"
+    exit 1
+fi
+
+# Run
+main

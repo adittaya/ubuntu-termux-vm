@@ -1,24 +1,19 @@
 #!/data/data/com.termux/files/usr/bin/bash
 #
-# Ubuntu Termux VM - All-in-One Installer
-# ========================================
-# For first-time Termux users - Fully Automated
+# Ubuntu Termux VM - All-in-One Installer v2.0
+# =============================================
+# Fixed: aio=threads compatibility, proper script installation
 #
-# Just run: curl -L https://raw.githubusercontent.com/yourusername/ubuntu-termux-vm/main/install.sh | bash
+# Just run: curl -L https://raw.githubusercontent.com/YOUR_USERNAME/ubuntu-termux-vm/main/install.sh | bash
 #
 
 set -e
-
-# ═══════════════════════════════════════════════════════════════
-# CONFIGURATION
-# ═══════════════════════════════════════════════════════════════
 
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-MAGENTA='\033[0;35m'
 CYAN='\033[0;36m'
 WHITE='\033[1;37m'
 DIM='\033[2m'
@@ -26,7 +21,7 @@ BOLD='\033[1m'
 RESET='\033[0m'
 
 # URLs
-REPO_URL="https://github.com/yourusername/ubuntu-termux-vm"
+REPO_URL="https://github.com/YOUR_USERNAME/ubuntu-termux-vm"
 UBUNTU_MIRROR="https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img"
 
 # Directories
@@ -34,278 +29,84 @@ HOME_DIR="$HOME"
 VM_DIR="$HOME_DIR/storage/shared/ubuntu-vm"
 SHARE_DIR="$HOME_DIR/ubuntu_share"
 
-# ═══════════════════════════════════════════════════════════════
-# ANIMATION FUNCTIONS
-# ═══════════════════════════════════════════════════════════════
-
-# Spinner animation
-spinner() {
-    local pid=$1
-    local delay=0.1
-    local spinstr='|/-\'
-    while [ "$(ps a | awk '{print $1}' | grep -w $pid)" ]; do
-        local temp=${spinstr#?}
-        printf " [%c]  " "$spinstr"
-        local spinstr=$temp${spinstr%"$temp"}
-        sleep $delay
-        printf "\b\b\b\b\b\b"
-    done
-    printf "    \b\b\b\b"
-}
-
-# Progress bar
-progress_bar() {
-    local duration=$1
-    local width=$2
-    local label=$3
-    
-    for ((i=0; i<=100; i+=5)); do
-        local filled=$((i * width / 100))
-        local empty=$((width - filled))
-        printf "\r${DIM}%-20s${RESET} [${GREEN}" "$label"
-        for ((j=0; j<filled; j++)); do printf "█"; done
-        for ((j=0; j<empty; j++)); do printf "░"; done
-        printf "${RESET}] %3d%%" "$i"
-        sleep $(echo "$duration / 20" | bc -l 2>/dev/null || echo "0.1")
-    done
-    printf "\n"
-}
-
-# Animated text
-animate_text() {
-    local text="$1"
-    local color="${2:-$WHITE}"
-    echo -ne "$color"
-    for ((i=0; i<${#text}; i++)); do
-        echo -ne "${text:$i:1}"
-        sleep 0.02
-    done
-    echo -ne "$RESET\n"
-}
-
-# Success animation
-success_animation() {
-    echo -e "${GREEN}"
-    echo "  ╔════════════════════════════════════════╗"
-    echo "  ║           ✓ SUCCESS!                  ║"
-    echo "  ╚════════════════════════════════════════╝"
-    echo -ne "$RESET"
-}
-
-# Error animation
-error_animation() {
-    echo -e "${RED}"
-    echo "  ╔════════════════════════════════════════╗"
-    echo "  ║           ✗ ERROR                     ║"
-    echo "  ╚════════════════════════════════════════╝"
-    echo -ne "$RESET"
-}
-
-# ═══════════════════════════════════════════════════════════════
-# UTILITY FUNCTIONS
-# ═══════════════════════════════════════════════════════════════
-
-log() {
-    echo -e "${DIM}[$(date '+%H:%M:%S')]${RESET} $*"
-}
-
-step() {
-    echo -e "\n${CYAN}╔════════════════════════════════════════════════╗${RESET}"
-    echo -e "${CYAN}║${RESET} ${BOLD}$*${RESET} ${CYAN}║${RESET}"
-    echo -e "${CYAN}╚════════════════════════════════════════════════╝${RESET}\n"
-}
-
-check_exit() {
-    if [ $? -ne 0 ]; then
-        error_animation
-        echo -e "${RED}Failed: $*${RESET}"
-        echo -e "${YELLOW}Check the error above and try again.${RESET}"
-        exit 1
-    fi
-}
-
-# ═══════════════════════════════════════════════════════════════
-# MAIN INSTALLATION
-# ═══════════════════════════════════════════════════════════════
-
-welcome() {
-    clear
-    
-    echo -e "${GREEN}"
-    echo "╔══════════════════════════════════════════════════════════════╗"
-    echo "║                                                              ║"
-    echo "║     🐘  Ubuntu VM for Termux - Installer            ║"
-    echo "║                                                              ║"
-    echo "║     Run full Ubuntu 24.04 on your Android phone!    ║"
-    echo "║                                                              ║"
-    echo "╚══════════════════════════════════════════════════════════════╝"
-    echo -e "${RESET}"
-    
-    echo ""
-    echo -e "${WHITE}Welcome! This installer will:${RESET}"
-    echo ""
-    echo -e "  ${GREEN}✓${RESET} Set up Termux storage"
-    echo -e "  ${GREEN}✓${RESET} Update all packages"
-    echo -e "  ${GREEN}✓${RESET} Install QEMU + dependencies"
-    echo -e "  ${GREEN}✓${RESET} Download Ubuntu 24.04 (~500MB)"
-    echo -e "  ${GREEN}✓${RESET} Create virtual disk"
-    echo -e "  ${GREEN}✓${RESET} Configure auto-setup"
-    echo ""
-    echo -e "${DIM}Installation takes 5-10 minutes depending on internet speed.${RESET}"
-    echo ""
-    echo -e "${YELLOW}Press ENTER to continue, or Ctrl+C to cancel${RESET}"
-    read -s
-}
+echo -e "${GREEN}"
+echo "╔══════════════════════════════════════════════════════════════╗"
+echo "║                                                              ║"
+echo "║     🐘  Ubuntu VM for Termux - Installer v2.0               ║"
+echo "║                                                              ║"
+echo "║     Run full Ubuntu 24.04 on your Android phone!             ║"
+echo "║                                                              ║"
+echo "╚══════════════════════════════════════════════════════════════╝"
+echo -e "${RESET}"
 
 setup_storage() {
-    step "Step 1/7: Setting up Storage"
+    echo -e "\n${CYAN}[1/7] Setting up storage...${RESET}"
     
-    log "Requesting storage permission..."
-    
-    # Check if storage is already set up
-    if [ -d "$HOME/storage" ]; then
-        log "Storage already configured"
+    if [ -d "$HOME_DIR/storage" ]; then
+        echo -e "  ${GREEN}✓${RESET} Storage already configured"
     else
-        log "Running termux-setup-storage..."
         termux-setup-storage 2>/dev/null || true
-        
-        echo -e "${YELLOW}"
-        echo "  ┌─────────────────────────────────────────────────┐"
-        echo "  │  ALLOW STORAGE PERMISSION!                      │"
-        echo "  │                                                 │"
-        echo "  │  1. Tap 'Allow' on the permission popup        │"
-        echo "  │  2. If no popup, run: termux-setup-storage     │"
-        echo "  │  3. Then press ENTER here                      │"
-        echo "  └─────────────────────────────────────────────────┘"
-        echo -e "${RESET}"
-        
-        read -p "  Press ENTER after granting permission... "
+        echo -e "  ${GREEN}✓${RESET} Storage permission requested"
     fi
     
-    # Create directories
-    log "Creating directories..."
     mkdir -p "$VM_DIR" "$SHARE_DIR"
-    check_exit "Creating directories"
-    
-    success_animation
-    echo -e "  ${GREEN}Storage configured successfully!${RESET}"
+    echo -e "  ${GREEN}✓${RESET} Directories created"
 }
 
 update_packages() {
-    step "Step 2/7: Updating Packages"
+    echo -e "\n${CYAN}[2/7] Updating packages...${RESET}"
     
-    log "Updating package lists..."
+    pkg update -y 2>&1 | tail -3
+    pkg upgrade -y 2>&1 | tail -3
     
-    # Change repo if needed
-    if ! pkg update &>/dev/null; then
-        log "Changing repository..."
-        termux-change-repo 2>/dev/null || true
-    fi
-    
-    # Update
-    pkg update -y 2>&1 | tail -5
-    
-    log "Upgrading packages..."
-    pkg upgrade -y 2>&1 | tail -5
-    
-    success_animation
-    echo -e "  ${GREEN}Packages updated!${RESET}"
+    echo -e "  ${GREEN}✓${RESET} Packages updated"
 }
 
 install_dependencies() {
-    step "Step 3/7: Installing Dependencies"
+    echo -e "\n${CYAN}[3/7] Installing dependencies...${RESET}"
     
-    local packages=(
-        "qemu-system-aarch64"
-        "xorriso"
-        "wget"
-        "curl"
-        "git"
-        "openssh"
-        "htop"
-        "vim"
-    )
+    pkg install qemu-system-aarch64 xorriso wget curl git openssh htop vim -y 2>&1 | tail -3
     
-    log "Installing ${#packages[@]} packages..."
-    echo ""
-    
-    for pkg_name in "${packages[@]}"; do
-        printf "  ${DIM}•${RESET} Installing %-25s" "$pkg_name"
-        
-        pkg install "$pkg_name" -y 2>&1 | grep -E "(Downloading|Installing|Unpacking)" | tail -1 || true
-        
-        if [ $? -eq 0 ]; then
-            printf "\r  ${GREEN}✓${RESET} %-30s installed\n" "$pkg_name"
-        else
-            printf "\r  ${RED}✗${RESET} %-30s failed\n" "$pkg_name"
-        fi
-    done
-    
-    success_animation
-    echo -e "  ${GREEN}All dependencies installed!${RESET}"
+    echo -e "  ${GREEN}✓${RESET} Dependencies installed"
 }
 
 download_ubuntu() {
-    step "Step 4/7: Downloading Ubuntu 24.04"
+    echo -e "\n${CYAN}[4/7] Downloading Ubuntu 24.04...${RESET}"
     
     local cloud_img="$VM_DIR/ubuntu-cloud.img"
     
     if [ -f "$cloud_img" ] && [ $(stat -c%s "$cloud_img" 2>/dev/null || echo 0) -gt 100000000 ]; then
-        log "Ubuntu image already downloaded"
+        echo -e "  ${GREEN}✓${RESET} Already downloaded"
         return 0
     fi
     
-    log "Downloading from: $UBUNTU_MIRROR"
-    echo ""
+    wget -q --show-progress -O "$cloud_img" "$UBUNTU_MIRROR"
     
-    # Download with progress
-    wget -q --show-progress -O "$cloud_img" "$UBUNTU_MIRROR" 2>&1 &
-    local pid=$!
-    spinner $pid
-    
-    wait $pid
-    
-    if [ $? -eq 0 ]; then
-        local size=$(du -h "$cloud_img" | cut -f1)
-        success_animation
-        echo -e "  ${GREEN}Ubuntu downloaded! ($size)${RESET}"
-    else
-        error_animation
-        echo -e "  ${RED}Download failed!${RESET}"
-        echo ""
-        echo -e "${YELLOW}Try manual download:${RESET}"
-        echo "  wget $UBUNTU_MIRROR -O $cloud_img"
-        exit 1
-    fi
+    local size=$(du -h "$cloud_img" | cut -f1)
+    echo -e "  ${GREEN}✓${RESET} Downloaded ($size)"
 }
 
 create_disk() {
-    step "Step 5/7: Creating Virtual Disk"
+    echo -e "\n${CYAN}[5/7] Creating virtual disk...${RESET}"
     
     local disk="$VM_DIR/ubuntu-disk.qcow2"
     
     if [ -f "$disk" ]; then
-        log "Disk already exists"
+        echo -e "  ${GREEN}✓${RESET} Already exists"
         return 0
     fi
     
-    log "Creating 25GB dynamic disk..."
+    qemu-img create -f qcow2 "$disk" 25G >/dev/null 2>&1
     
-    qemu-img create -f qcow2 "$disk" 25G 2>&1 &
-    local pid=$!
-    spinner $pid
-    
-    success_animation
-    echo -e "  ${GREEN}Virtual disk created!${RESET}"
+    echo -e "  ${GREEN}✓${RESET} 25GB disk created"
 }
 
 create_cloud_init() {
-    step "Step 6/7: Creating Cloud-Init Config"
+    echo -e "\n${CYAN}[6/7] Creating cloud-init config...${RESET}"
     
     local ci_dir="$VM_DIR/cloud-init"
     mkdir -p "$ci_dir"
     
-    # Create user-data
     cat > "$ci_dir/user-data" << 'USERDATA'
 #cloud-config
 chpasswd:
@@ -401,33 +202,37 @@ USERDATA
 
     echo "meta-data: {}" > "$ci_dir/meta-data"
     
-    # Create ISO
     cd "$ci_dir"
     xorriso -as mkisofs -volid CIDATA -joliet -rock -output "$VM_DIR/cloud-init.iso" . >/dev/null 2>&1
     cd - >/dev/null
     
-    success_animation
-    echo -e "  ${GREEN}Cloud-init configured!${RESET}"
+    echo -e "  ${GREEN}✓${RESET} Cloud-init configured"
 }
 
-copy_scripts() {
-    step "Step 7/7: Installing Scripts"
+install_scripts() {
+    echo -e "\n${CYAN}[7/7] Installing scripts...${RESET}"
     
+    # Download scripts from GitHub if not in same directory
     local script_dir="$(dirname "$(readlink -f "$0")")"
     
-    # Copy scripts
-    log "Copying scripts..."
+    # Download main scripts
+    local scripts="ubuntu-linux ubuntu-vm-console ubuntu-vm-backup ubuntu-vm-health setup-ubuntu-vm.sh"
     
-    for script in ubuntu-linux ubuntu-vm-console ubuntu-vm-backup ubuntu-vm-health setup-ubuntu-vm.sh; do
+    for script in $scripts; do
         if [ -f "$script_dir/$script" ]; then
-            cp "$script_dir/$script" "$HOME_DIR/"
+            cp "$script_dir/$script" "$HOME_DIR/$script"
             chmod +x "$HOME_DIR/$script"
             echo -e "  ${GREEN}✓${RESET} $script"
+        else
+            # Try downloading from repo
+            wget -q "https://raw.githubusercontent.com/YOUR_USERNAME/ubuntu-termux-vm/main/$script" -O "$HOME_DIR/$script" 2>/dev/null && \
+            chmod +x "$HOME_DIR/$script" && \
+            echo -e "  ${GREEN}✓${RESET} $script (downloaded)" || \
+            echo -e "  ${YELLOW}!${RESET} $script (not found)"
         fi
     done
     
     # Add aliases
-    log "Adding bash aliases..."
     cat >> "$HOME_DIR/.bashrc" << 'BASHRC'
 
 # Ubuntu VM aliases
@@ -437,10 +242,9 @@ alias ubuntu-backup='~/ubuntu-vm-backup'
 alias ubuntu-health='~/ubuntu-vm-health'
 BASHRC
     
-    source "$HOME_DIR/.bashrc"
+    source "$HOME_DIR/.bashrc" 2>/dev/null || true
     
-    success_animation
-    echo -e "  ${GREEN}Scripts installed!${RESET}"
+    echo -e "  ${GREEN}✓${RESET} Aliases added"
 }
 
 final_message() {
@@ -474,17 +278,13 @@ final_message() {
     echo -e "${CYAN}│${RESET}     File Browser: ${YELLOW}http://localhost:9000${RESET}         ${CYAN}│${RESET}"
     echo -e "${CYAN}│${RESET}     Web Terminal: ${YELLOW}http://localhost:7681${RESET}         ${CYAN}│${RESET}"
     echo -e "${CYAN}│${RESET}                                                 ${CYAN}│${RESET}"
-    echo -e "${CYAN}├─────────────────────────────────────────────────────────┤${RESET}"
-    echo -e "${CYAN}│${RESET}  ${DIM}Commands:${RESET}                                       ${CYAN}│${RESET}"
-    echo -e "${CYAN}│${RESET}    ${YELLOW}ubuntu${RESET}         - Quick start VM                   ${CYAN}│${RESET}"
-    echo -e "${CYAN}│${RESET}    ${YELLOW}ubuntu-console${RESET} - Interactive menu                 ${CYAN}│${RESET}"
-    echo -e "${CYAN}│${RESET}    ${YELLOW}ubuntu-backup${RESET}  - Backup VM                        ${CYAN}│${RESET}"
-    echo -e "${CYAN}│${RESET}    ${YELLOW}ubuntu-health${RESET}  - Check disk health                ${CYAN}│${RESET}"
-    echo -e "${CYAN}│${RESET}                                                 ${CYAN}│${RESET}"
     echo -e "${CYAN}└─────────────────────────────────────────────────────────┘${RESET}"
     echo ""
-    echo -e "${WHITE}Documentation:${RESET}"
-    echo -e "  ${BLUE}https://github.com/yourusername/ubuntu-termux-vm${RESET}"
+    echo -e "${WHITE}Commands:${RESET}"
+    echo -e "  ${YELLOW}ubuntu${RESET}         - Start VM"
+    echo -e "  ${YELLOW}ubuntu-console${RESET} - Interactive menu"
+    echo -e "  ${YELLOW}ubuntu-backup${RESET}  - Backup VM"
+    echo -e "  ${YELLOW}ubuntu-health${RESET}  - Check disk health"
     echo ""
     echo -e "${DIM}First boot takes 2-5 minutes for auto-setup.${RESET}"
     echo -e "${DIM}Exit VM: Press Ctrl+A then X${RESET}"
@@ -493,21 +293,12 @@ final_message() {
     echo ""
 }
 
-# ═══════════════════════════════════════════════════════════════
-# MAIN
-# ═══════════════════════════════════════════════════════════════
-
-main() {
-    welcome
-    setup_storage
-    update_packages
-    install_dependencies
-    download_ubuntu
-    create_disk
-    create_cloud_init
-    copy_scripts
-    final_message
-}
-
-# Run
-main
+# Main
+setup_storage
+update_packages
+install_dependencies
+download_ubuntu
+create_disk
+create_cloud_init
+install_scripts
+final_message

@@ -1,0 +1,83 @@
+#!/data/data/com.termux/files/usr/bin/bash
+#
+# Ubuntu VM Disk Health Check
+# ============================
+# Verifies VM disk integrity
+#
+
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+RED='\033[0;31m'
+NC='\033[0m'
+
+VM_DIR="$HOME/storage/shared/ubuntu-vm"
+DISK="$VM_DIR/ubuntu-disk.qcow2"
+
+echo -e "${GREEN}========================================${NC}"
+echo -e "${GREEN}     Ubuntu VM Disk Health Check        ${NC}"
+echo -e "${GREEN}========================================${NC}"
+echo ""
+
+if [ ! -f "$DISK" ]; then
+    echo -e "${RED}Error: Disk image not found at $DISK${NC}"
+    exit 1
+fi
+
+# Disk info
+echo -e "${BLUE}Disk Information:${NC}"
+ls -lh "$DISK" | awk '{print "  File: " $9; print "  Size: " $5}'
+echo ""
+
+# Check disk format
+echo -e "${BLUE}Disk Format:${NC}"
+if command -v qemu-img > /dev/null 2>&1; then
+    qemu-img info "$DISK" | grep -E "file format|virtual size|disk size" | sed 's/^/  /'
+else
+    echo "  qemu-img not available"
+fi
+echo ""
+
+# Check disk integrity
+echo -e "${YELLOW}Checking disk integrity...${NC}"
+if command -v qemu-img > /dev/null 2>&1; then
+    if qemu-img check "$DISK" 2>&1 | grep -q "No errors"; then
+        echo -e "${GREEN}  ✓ Disk integrity: OK${NC}"
+    else
+        qemu-img check "$DISK" 2>&1 | sed 's/^/  /'
+    fi
+else
+    echo "  qemu-img not available, skipping integrity check"
+fi
+echo ""
+
+# Check for snapshots
+echo -e "${BLUE}Snapshots:${NC}"
+if command -v qemu-img > /dev/null 2>&1; then
+    SNAPSHOTS=$(qemu-img snapshot -l "$DISK" 2>/dev/null | wc -l)
+    if [ "$SNAPSHOTS" -gt 1 ]; then
+        echo "  Found $((SNAPSHOTS-1)) snapshot(s)"
+        qemu-img snapshot -l "$DISK" 2>/dev/null | tail -n +2 | sed 's/^/  /'
+    else
+        echo "  No snapshots"
+    fi
+fi
+echo ""
+
+# Backup status
+BACKUP_DIR="$VM_DIR/backups"
+if [ -d "$BACKUP_DIR" ]; then
+    BACKUP_COUNT=$(ls -1 "$BACKUP_DIR"/*.qcow2 2>/dev/null | wc -l)
+    echo -e "${BLUE}Backups:${NC}"
+    if [ "$BACKUP_COUNT" -gt 0 ]; then
+        echo -e "  ${GREEN}✓ $BACKUP_COUNT backup(s) available${NC}"
+        ls -lh "$BACKUP_DIR"/*.qcow2 2>/dev/null | tail -5 | awk '{print "    " $9 " (" $5 ")"}'
+    else
+        echo -e "  ${YELLOW}No backups found. Run: ubuntu-vm-backup${NC}"
+    fi
+fi
+echo ""
+
+echo -e "${GREEN}========================================${NC}"
+echo -e "${GREEN}     Health Check Complete              ${NC}"
+echo -e "${GREEN}========================================${NC}"
