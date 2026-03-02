@@ -1,0 +1,81 @@
+#!/data/data/com.termux/files/usr/bin/bash
+#
+# Kali Linux (Pure CLI) VM Launcher for Termux + QEMU
+# ====================================================
+# Start: kali or ~/kali-linux
+# Exit: Ctrl+A then X
+#
+
+set -e
+
+# Colors
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+DIM='\033[2m'
+NC='\033[0m'
+
+# Directories
+VM_DIR="$HOME/storage/shared/kali-vm"
+DISK="$VM_DIR/kali-disk.qcow2"
+CLOUD_IMG="$VM_DIR/debian-cloud.qcow2"
+CLOUD_INIT_ISO="$VM_DIR/cloud-init.iso"
+SHARE_DIR="$HOME/kali_share"
+UEFI="$PREFIX/share/qemu/edk2-aarch64-code.fd"
+
+# Default Settings
+CPU_CORES=4
+RAM_SIZE="4G"
+CACHE_MODE="writeback"
+
+echo -e "${GREEN}╔════════════════════════════════════════════════╗${NC}"
+echo -e "${GREEN}║     Kali Linux (Pure CLI) - VM Launcher        ║${NC}"
+echo -e "${GREEN}╚════════════════════════════════════════════════╝${NC}"
+echo ""
+
+# Check prerequisites
+if [ ! -f "$UEFI" ] || [ ! -f "$DISK" ]; then
+    echo -e "${RED}Error: VM not set up. Run setup first.${NC}"
+    exit 1
+fi
+
+# Create share directory
+mkdir -p "$SHARE_DIR" 2>/dev/null || true
+
+# Smart boot detection
+DISK_SIZE=$(stat -c%s "$DISK" 2>/dev/null || echo "0")
+if [ "$DISK_SIZE" -gt 100000000 ]; then
+    BOOT_ORDER="c"
+    BOOT_MSG="Booting from installed Kali..."
+else
+    BOOT_ORDER="d"
+    BOOT_MSG="First boot - Installing from cloud-init..."
+fi
+
+echo -e "${BLUE}$BOOT_MSG${NC}"
+echo -e "${DIM}Boot order: ${BOOT_ORDER} (c=disk, d=CDROM)${NC}"
+echo ""
+echo -e "${YELLOW}Connect via SSH:${NC}"
+echo -e "  ssh -p 2222 root@localhost"
+echo -e "${DIM}  Password: root${NC}"
+echo ""
+echo -e "${DIM}Exit QEMU: Ctrl+A then X${NC}"
+echo ""
+
+# QEMU Command
+exec qemu-system-aarch64 \
+    -M virt,highmem=on \
+    -cpu max \
+    -smp ${CPU_CORES} \
+    -m ${RAM_SIZE} \
+    -bios "$UEFI" \
+    -drive file="$DISK",if=virtio,cache=$CACHE_MODE,aio=threads,discard=unmap,snapshot=off \
+    -drive file="$CLOUD_INIT_ISO",if=virtio,media=cdrom \
+    -netdev user,id=n1,hostfwd=tcp::2222-:22 \
+    -device virtio-net-pci,netdev=n1 \
+    -virtfs local,path="$SHARE_DIR",mount_tag=shared_mount,security_model=none,id=shared_mount \
+    -device virtio-rng-pci \
+    -device virtio-balloon-pci \
+    -nographic \
+    -serial mon:stdio \
+    -boot order=$BOOT_ORDER
